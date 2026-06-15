@@ -26,6 +26,14 @@ func currentVisualCursorScreenMappings() -> [VisualCursorScreenMapping] {
     }
 }
 
+func frontmostApplicationMatches(_ frontmost: NSRunningApplication?, app: RunningAppDescriptor) -> Bool {
+    guard let frontmost else {
+        return false
+    }
+
+    return frontmost.processIdentifier == app.pid
+}
+
 func screenStatePointToAppKitGlobalPoint(
     fromScreenStatePoint point: CGPoint,
     screenMappings: [VisualCursorScreenMapping] = currentVisualCursorScreenMappings()
@@ -503,7 +511,11 @@ public final class ComputerUseService {
             throw ComputerUseError.message("AXUIElementPerformAction failed with \(result.rawValue)")
         }
 
-        Thread.sleep(forTimeInterval: 0.15)
+        if rawAction.caseInsensitiveCompare(kAXRaiseAction as String) == .orderedSame {
+            try activateAppAfterWindowRaise(snapshot.app)
+        } else {
+            Thread.sleep(forTimeInterval: 0.15)
+        }
         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
     }
 
@@ -941,6 +953,24 @@ public final class ComputerUseService {
         default:
             throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
         }
+    }
+
+    private func activateAppAfterWindowRaise(_ app: RunningAppDescriptor) throws {
+        // AXRaise can expose or reorder a window without making the owning app
+        // frontmost. Workspace restore needs the stronger postcondition.
+        _ = app.runningApplication.unhide()
+        _ = app.runningApplication.activate(options: [.activateAllWindows])
+
+        for _ in 0..<8 {
+            if frontmostApplicationMatches(NSWorkspace.shared.frontmostApplication, app: app) {
+                return
+            }
+
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        let frontmostName = NSWorkspace.shared.frontmostApplication.map(AppDiscovery.appName(_:)) ?? "unknown"
+        throw ComputerUseError.message("AXRaise did not make \(app.name) frontmost; frontmost app is \(frontmostName)")
     }
 
     private func isSettable(element: AXUIElement, attribute: String) -> Bool {

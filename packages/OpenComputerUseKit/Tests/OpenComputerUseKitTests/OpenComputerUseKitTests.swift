@@ -4,6 +4,19 @@ import XCTest
 @testable import OpenComputerUseKit
 
 final class OpenComputerUseKitTests: XCTestCase {
+    func testFrontmostApplicationMatchesByPid() {
+        let current = NSRunningApplication.current
+        let descriptor = RunningAppDescriptor(
+            name: AppDiscovery.appName(current),
+            bundleIdentifier: current.bundleIdentifier,
+            pid: current.processIdentifier,
+            runningApplication: current
+        )
+
+        XCTAssertTrue(frontmostApplicationMatches(current, app: descriptor))
+        XCTAssertFalse(frontmostApplicationMatches(nil, app: descriptor))
+    }
+
     func testCLIRecognizesGlobalHelpAndVersionFlags() throws {
         XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["-h"]), .help(command: nil))
         XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["--help"]), .help(command: nil))
