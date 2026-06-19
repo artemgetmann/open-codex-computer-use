@@ -44,6 +44,7 @@ enum MouseButtonKind: String {
 
 enum InputSimulation {
     static let maxKeyboardUnicodeChunkLength = 64
+    private static let leftShiftKeyCode: CGKeyCode = 56
 
     static func prepareAppForGlobalPointerInput(_ app: RunningAppDescriptor) {
         if raiseAppWindowViaAccessibility(pid: app.pid) {
@@ -97,6 +98,19 @@ enum InputSimulation {
         event.location = point
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.1)
+    }
+
+    static func performWithShiftModifier(_ body: () -> Bool) -> Bool {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            return body()
+        }
+
+        postShiftModifier(source: source, keyDown: true)
+        Thread.sleep(forTimeInterval: 0.03)
+        let result = body()
+        Thread.sleep(forTimeInterval: 0.03)
+        postShiftModifier(source: source, keyDown: false)
+        return result
     }
 
     static func dragTargeted(from start: CGPoint, to end: CGPoint, pid: pid_t) throws {
@@ -239,6 +253,15 @@ enum InputSimulation {
         event.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
         event.postToPid(pid)
         Thread.sleep(forTimeInterval: 0.03)
+    }
+
+    private static func postShiftModifier(source: CGEventSource, keyDown: Bool) {
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: leftShiftKeyCode, keyDown: keyDown) else {
+            return
+        }
+
+        event.flags = keyDown ? .maskShift : []
+        event.post(tap: .cghidEventTap)
     }
 
     private static func raiseAppWindowViaAccessibility(pid: pid_t) -> Bool {

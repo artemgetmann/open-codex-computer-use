@@ -96,6 +96,17 @@ public enum ToolDefinitions {
             )
         ),
         ToolDefinition(
+            name: "same_stage_activate",
+            description: "Experimental probe: try to make an already-running app window visible without forced app activation and return structured evidence. This tool is part of plugin `Computer Use`.",
+            annotations: defaultAnnotations(),
+            inputSchema: objectSchema(
+                properties: [
+                    "app": stringProperty(description: "Already-running app name or bundle identifier"),
+                ],
+                required: ["app"]
+            )
+        ),
+        ToolDefinition(
             name: "press_key",
             description: "Press a key or key-combination on the keyboard, including modifier and navigation keys.\n  - This supports xdotool's `key` syntax.\n  - Examples: \"a\", \"Return\", \"Tab\", \"super+c\", \"Up\", \"KP_0\" (for the numpad 0 key). This tool is part of plugin `Computer Use`.",
             annotations: defaultAnnotations(),

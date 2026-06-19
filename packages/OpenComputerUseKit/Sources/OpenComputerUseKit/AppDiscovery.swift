@@ -166,6 +166,21 @@ enum AppDiscovery {
         throw ComputerUseError.appNotFound(normalizedQuery)
     }
 
+    static func resolveRunningOnly(_ query: String) throws -> RunningAppDescriptor {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let running = runningApps()
+
+        if let bundleIdentifier = blockedBundleIdentifier(forQuery: normalizedQuery) {
+            throw AppSafetyPolicy.permissionDenied(bundleIdentifier: bundleIdentifier)
+        }
+
+        guard let match = resolvedRunningApp(in: running, matching: normalizedQuery) else {
+            throw ComputerUseError.appNotFound(normalizedQuery)
+        }
+
+        return match
+    }
+
     private static func resolvedRunningApp(in descriptors: [RunningAppDescriptor], matching query: String) -> RunningAppDescriptor? {
         if isBundleIdentifierQuery(query) {
             return descriptors.first(where: { descriptor in

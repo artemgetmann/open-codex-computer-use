@@ -356,6 +356,11 @@ func shouldPreferContainingWebRowAXClickCandidate(
 }
 
 public final class ComputerUseService {
+    private struct VisibleWindowSummary {
+        let visible: Bool
+        let windowCount: Int
+    }
+
     private var snapshotsByApp: [String: AppSnapshot] = [:]
 
     public init() {}
@@ -517,6 +522,111 @@ public final class ComputerUseService {
             Thread.sleep(forTimeInterval: 0.15)
         }
         return snapshotResult(for: try refreshSnapshot(for: query), style: .actionResult)
+    }
+
+    public func sameStageActivate(app query: String) throws -> ToolCallResult {
+        let targetApp = try AppDiscovery.resolveRunningOnly(query)
+        let frontmostBefore = frontmostAppName()
+        let targetVisibleBefore = visibleWindowSummary(for: targetApp.pid)
+        let appElement = AXUIElementCreateApplication(targetApp.pid)
+        let window = preferredSameStageWindow(for: appElement)
+
+        var strategies: [[String: Any]] = []
+        var modifierAssistedActivationUsed = false
+        var axRaiseOnlyUsed = false
+        var targetVisibleAfterModifier = targetVisibleBefore.visible
+
+        if let window {
+            let modifierActions = copyActions(for: window) ?? []
+            modifierAssistedActivationUsed = InputSimulation.performWithShiftModifier {
+                (try? performAction(
+                    named: kAXRaiseAction as String,
+                    on: window,
+                    availableActions: modifierActions
+                )) == true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+            targetVisibleAfterModifier = visibleWindowSummary(for: targetApp.pid).visible
+            strategies.append([
+                "name": "modifier-assisted-ax-raise",
+                "attempted": true,
+                "used": modifierAssistedActivationUsed,
+                "targetVisibleAfter": targetVisibleAfterModifier,
+                "note": "Posted a Shift modifier around AXRaise; no private Stage Manager API or raw sidebar coordinates were used.",
+            ])
+        } else {
+            strategies.append([
+                "name": "modifier-assisted-ax-raise",
+                "attempted": false,
+                "used": false,
+                "targetVisibleAfter": targetVisibleAfterModifier,
+                "note": "No candidate accessibility window was available for modifier-assisted AXRaise.",
+            ])
+        }
+
+        if !targetVisibleAfterModifier, let window {
+            let plainActions = copyActions(for: window) ?? []
+            axRaiseOnlyUsed = try performAction(
+                named: kAXRaiseAction as String,
+                on: window,
+                availableActions: plainActions
+            )
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+
+        let targetVisibleAfter = visibleWindowSummary(for: targetApp.pid)
+        let frontmostAfterTask = frontmostAppName()
+        let forcedActivationUsed = false
+        let launchOrOpenRecoveryUsed = false
+        let strictRestoreNeeded = frontmostBefore != nil
+            && frontmostAfterTask != nil
+            && frontmostBefore != frontmostAfterTask
+        let visibleSameStageApproximation = targetVisibleAfter.visible && !forcedActivationUsed && !launchOrOpenRecoveryUsed
+        let strategy = modifierAssistedActivationUsed
+            ? "modifier-assisted-ax-raise"
+            : (axRaiseOnlyUsed ? "ax-raise-only" : "none")
+        let actionCount = (modifierAssistedActivationUsed ? 1 : 0) + (axRaiseOnlyUsed ? 1 : 0)
+
+        strategies.append([
+            "name": "ax-raise-only",
+            "attempted": !targetVisibleAfterModifier && window != nil,
+            "used": axRaiseOnlyUsed,
+            "targetVisibleAfter": targetVisibleAfter.visible,
+            "note": "Plain AXRaise was attempted only if the modifier-assisted probe did not expose an on-screen window.",
+        ])
+
+        return try jsonTextResult([
+            "ok": targetVisibleAfter.visible,
+            "app": targetApp.name,
+            "bundleIdentifier": targetApp.bundleIdentifier.map { $0 as Any } ?? NSNull(),
+            "pid": Int(targetApp.pid),
+            "actionCount": max(actionCount, 1),
+            "movedFocus": strictRestoreNeeded,
+            "frontmostBefore": frontmostBefore.map { $0 as Any } ?? NSNull(),
+            "frontmostAfterTask": frontmostAfterTask.map { $0 as Any } ?? NSNull(),
+            "targetVisibleBefore": targetVisibleBefore.visible,
+            "targetVisibleAfter": targetVisibleAfter.visible,
+            "targetWindowCountBefore": targetVisibleBefore.windowCount,
+            "targetWindowCountAfter": targetVisibleAfter.windowCount,
+            "visibleSameStageApproximation": visibleSameStageApproximation,
+            "strictRestoreNeeded": strictRestoreNeeded,
+            "forcedActivationUsed": forcedActivationUsed,
+            "launchOrOpenRecoveryUsed": launchOrOpenRecoveryUsed,
+            "modifierAssistedActivationUsed": modifierAssistedActivationUsed,
+            "axRaiseOnlyUsed": axRaiseOnlyUsed,
+            "strategy": strategy,
+            "strategies": strategies,
+            "methodEvidence": [
+                "tool": "same_stage_activate",
+                "strategies": strategies,
+                "modifierAssistedActivationUsed": modifierAssistedActivationUsed,
+                "axRaiseOnlyUsed": axRaiseOnlyUsed,
+                "forcedActivationUsed": forcedActivationUsed,
+                "launchOrOpenRecoveryUsed": launchOrOpenRecoveryUsed,
+            ],
+            "stageManagerMembershipProven": false,
+            "stageManagerMembershipNote": "macOS does not expose public evidence for arbitrary Stage Manager group membership; this probe reports visible-window approximation only.",
+        ])
     }
 
     public func scroll(app query: String, direction: String, elementIndex: String, pages: Double) throws -> ToolCallResult {
@@ -941,6 +1051,73 @@ public final class ComputerUseService {
         }
 
         return activated
+    }
+
+    private func frontmostAppName() -> String? {
+        NSWorkspace.shared.frontmostApplication.map(AppDiscovery.appName(_:))
+    }
+
+    private func visibleWindowSummary(for pid: pid_t) -> VisibleWindowSummary {
+        guard let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return VisibleWindowSummary(visible: false, windowCount: 0)
+        }
+
+        let windows = infoList.filter { info in
+            guard
+                let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
+                ownerPID == pid,
+                let layer = info[kCGWindowLayer as String] as? Int,
+                layer == 0,
+                let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
+                let bounds = CGRect(dictionaryRepresentation: boundsDictionary)
+            else {
+                return false
+            }
+
+            let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+            return alpha > 0 && bounds.width * bounds.height >= 20_000
+        }
+
+        return VisibleWindowSummary(visible: !windows.isEmpty, windowCount: windows.count)
+    }
+
+    private func preferredSameStageWindow(for appElement: AXUIElement) -> AXUIElement? {
+        copyElementAttribute(kAXFocusedWindowAttribute, of: appElement)
+            ?? copyArrayAttribute(kAXWindowsAttribute, of: appElement)?.first(where: { element in
+                stringValue(of: element, attribute: kAXRoleAttribute) == kAXWindowRole as String
+            })
+    }
+
+    private func copyElementAttribute(_ attribute: String, of element: AXUIElement) -> AXUIElement? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard result == .success, let value else {
+            return nil
+        }
+
+        return (value as! AXUIElement)
+    }
+
+    private func copyArrayAttribute(_ attribute: String, of element: AXUIElement) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard result == .success, let value else {
+            return nil
+        }
+
+        return value as? [AXUIElement]
+    }
+
+    private func jsonTextResult(_ payload: [String: Any]) throws -> ToolCallResult {
+        let data = try JSONSerialization.data(
+            withJSONObject: payload,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ComputerUseError.message("Failed to encode same-stage activation evidence.")
+        }
+
+        return ToolCallResult.text(text)
     }
 
     private func setBoolAttribute(named attribute: String, on element: AXUIElement) throws -> Bool {

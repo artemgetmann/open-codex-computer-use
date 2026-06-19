@@ -67,6 +67,10 @@ public final class ComputerUseToolDispatcher {
                 elementIndex: requireElementIndex(in: arguments),
                 action: requireString("action", in: arguments)
             )
+        case "same_stage_activate":
+            return try service.sameStageActivate(
+                app: requireString("app", in: arguments)
+            )
         case "scroll":
             return try service.scroll(
                 app: requireString("app", in: arguments),
