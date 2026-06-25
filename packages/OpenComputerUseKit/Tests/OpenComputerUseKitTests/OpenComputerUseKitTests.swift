@@ -807,6 +807,28 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertTrue(canUseActivationOnlyClickFallback(role: kAXWindowRole as String))
     }
 
+    func testSelectableRowContainerAttributesPreferListChildrenSelection() {
+        XCTAssertEqual(
+            selectableRowContainerAttributes(role: kAXListRole as String),
+            [kAXSelectedChildrenAttribute as String, kAXSelectedRowsAttribute as String]
+        )
+    }
+
+    func testSelectableRowContainerAttributesPreferRowSelectionForTablesAndOutlines() {
+        XCTAssertEqual(
+            selectableRowContainerAttributes(role: kAXTableRole as String),
+            [kAXSelectedRowsAttribute as String, kAXSelectedChildrenAttribute as String]
+        )
+        XCTAssertEqual(
+            selectableRowContainerAttributes(role: kAXOutlineRole as String),
+            [kAXSelectedRowsAttribute as String, kAXSelectedChildrenAttribute as String]
+        )
+    }
+
+    func testSelectableRowContainerAttributesRejectPlainGroups() {
+        XCTAssertTrue(selectableRowContainerAttributes(role: kAXGroupRole as String).isEmpty)
+    }
+
     func testKeyboardTextFallbackRejectsPlainWebArea() {
         XCTAssertFalse(
             canUseKeyboardTextFallback(
