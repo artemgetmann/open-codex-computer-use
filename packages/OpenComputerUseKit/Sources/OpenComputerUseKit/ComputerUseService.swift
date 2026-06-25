@@ -290,6 +290,22 @@ func canUseActivationOnlyClickFallback(role: String?) -> Bool {
     return role == kAXWindowRole as String
 }
 
+func selectableRowContainerAttributes(role: String?) -> [String] {
+    guard let role else {
+        return []
+    }
+
+    if role == kAXListRole as String {
+        return [kAXSelectedChildrenAttribute as String, kAXSelectedRowsAttribute as String]
+    }
+
+    if role == kAXTableRole as String || role == kAXOutlineRole as String || role == "AXBrowser" {
+        return [kAXSelectedRowsAttribute as String, kAXSelectedChildrenAttribute as String]
+    }
+
+    return []
+}
+
 func canUseKeyboardTextFallback(role: String?, roleDescription: String?, isValueSettable: Bool) -> Bool {
     if isValueSettable {
         return true
@@ -775,24 +791,43 @@ public final class ComputerUseService {
             return false
         }
 
+        for attribute in selectableRowContainerAttributes(role: target.containerRole) {
+            if try setElementArrayAttribute(named: attribute, on: target.container, to: target.item) {
+                Thread.sleep(forTimeInterval: 0.15)
+                return true
+            }
+        }
+
+        if try setBoolAttribute(named: kAXSelectedAttribute, on: target.item) {
+            Thread.sleep(forTimeInterval: 0.15)
+            return true
+        }
+
+        return false
+    }
+
+    private func setElementArrayAttribute(named attribute: String, on element: AXUIElement, to child: AXUIElement) throws -> Bool {
+        if !isSettable(element: element, attribute: attribute) {
+            return false
+        }
+
         let result = AXUIElementSetAttributeValue(
-            target.list,
-            kAXSelectedChildrenAttribute as CFString,
-            [target.item] as CFArray
+            element,
+            attribute as CFString,
+            [child] as CFArray
         )
 
         switch result {
         case .success:
-            Thread.sleep(forTimeInterval: 0.15)
             return true
         case .failure, .attributeUnsupported, .actionUnsupported, .cannotComplete, .noValue, .invalidUIElement, .illegalArgument:
             return false
         default:
-            throw ComputerUseError.message("AXUIElementSetAttributeValue(\(kAXSelectedChildrenAttribute)) failed with \(result.rawValue)")
+            throw ComputerUseError.message("AXUIElementSetAttributeValue(\(attribute)) failed with \(result.rawValue)")
         }
     }
 
-    private func selectableListItem(containing element: AXUIElement) -> (list: AXUIElement, item: AXUIElement)? {
+    private func selectableListItem(containing element: AXUIElement) -> (container: AXUIElement, containerRole: String, item: AXUIElement)? {
         var current = element
         var directChild = element
 
@@ -801,10 +836,9 @@ public final class ComputerUseService {
                 return nil
             }
 
-            if stringValue(of: parent, attribute: kAXRoleAttribute) == kAXListRole as String,
-               isSettable(element: parent, attribute: kAXSelectedChildrenAttribute)
-            {
-                return (parent, directChild)
+            let parentRole = stringValue(of: parent, attribute: kAXRoleAttribute)
+            if !selectableRowContainerAttributes(role: parentRole).isEmpty {
+                return (parent, parentRole ?? "", directChild)
             }
 
             directChild = parent
