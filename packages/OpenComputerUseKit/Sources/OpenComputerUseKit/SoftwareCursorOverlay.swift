@@ -120,6 +120,23 @@ func visualCursorIdlePose(restingTipPosition: CGPoint, phase: CGFloat) -> Visual
     )
 }
 
+func visualCursorAnchoredRenderState(
+    at tipPosition: CGPoint,
+    idleAngleOffset: CGFloat = 0,
+    configuration: CursorVisualDynamicsConfiguration = .officialInspired
+) -> CursorVisualRenderState {
+    CursorVisualRenderState(
+        tipPosition: tipPosition,
+        rotation: idleAngleOffset.clamped(
+            to: -configuration.animatedAngleOffsetMax...configuration.animatedAngleOffsetMax
+        ),
+        cursorBodyOffset: CGVector(dx: 0, dy: 0),
+        fogOffset: CGVector(dx: 0, dy: 0),
+        fogOpacity: configuration.fogOpacityBase,
+        fogScale: 1
+    )
+}
+
 public func visualCursorObservationFileURL(environment: [String: String]) -> URL? {
     guard
         let rawPath = environment["OPEN_COMPUTER_USE_VISUAL_CURSOR_OBSERVATION_FILE"]?
@@ -246,6 +263,7 @@ enum SoftwareCursorOverlay {
         restingTipPosition = constrainedTarget
         observationPhase = "pulse"
         animateClickPulse(at: constrainedTarget, clickCount: max(clickCount, 1), mouseButton: mouseButton)
+        anchorCursorAtRestingTarget(constrainedTarget)
         startIdleAnimation()
         scheduleHide(after: visualCursorPostInteractionIdleTimeout())
     }
@@ -259,13 +277,7 @@ enum SoftwareCursorOverlay {
         let constrainedTarget = clampTipPosition(targetPoint)
         restingTipPosition = constrainedTarget
         observationPhase = "settling"
-        placeCursor(
-            using: advanceVisualDynamics(
-                toward: constrainedTarget,
-                at: CACurrentMediaTime()
-            ),
-            clickProgress: 0
-        )
+        anchorCursorAtRestingTarget(constrainedTarget)
         startIdleAnimation()
         scheduleHide(after: visualCursorPostInteractionIdleTimeout())
     }
@@ -724,6 +736,22 @@ enum SoftwareCursorOverlay {
         )
         visualDynamicsState = result.state
         return result.renderState
+    }
+
+    private static func anchorCursorAtRestingTarget(_ tipPosition: CGPoint) {
+        // The visual dynamics layer intentionally lags during travel so the
+        // cursor has body/fog inertia. Action completion is different: app-agent
+        // callers may return before another idle timer frame is painted, so the
+        // resting pose must be written synchronously or the overlay can freeze
+        // away from the element that was actually clicked.
+        visualDynamicsState = CursorVisualDynamicsAnimator.state(
+            at: tipPosition,
+            time: CGFloat(CACurrentMediaTime())
+        )
+        placeCursor(
+            using: visualCursorAnchoredRenderState(at: tipPosition),
+            clickProgress: 0
+        )
     }
 
     private static func placeCursor(using renderState: CursorVisualRenderState, clickProgress: CGFloat) {
