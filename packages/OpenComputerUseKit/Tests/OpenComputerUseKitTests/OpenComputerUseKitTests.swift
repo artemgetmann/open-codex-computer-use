@@ -1752,6 +1752,37 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertGreaterThan(abs(negativePose.angleOffset), 0.08)
     }
 
+    func testVisualCursorAnchoredRenderStatePinsTipAfterLaggedMotion() {
+        let targetTipPosition = CGPoint(x: 549, y: 667)
+        let laggedMotion = CursorVisualDynamicsAnimator.advance(
+            state: CursorVisualDynamicsAnimator.state(at: CGPoint(x: 120, y: 180), time: 0),
+            targetTipPosition: targetTipPosition,
+            targetTime: 0.16,
+            baseHeading: visualCursorRenderBaseHeading(),
+            renderYAxisMultiplier: visualCursorRuntimeRenderYAxisMultiplier()
+        ).renderState
+
+        let laggedDistance = hypot(
+            laggedMotion.tipPosition.x - targetTipPosition.x,
+            laggedMotion.tipPosition.y - targetTipPosition.y
+        )
+        XCTAssertGreaterThan(laggedDistance, 1)
+
+        let anchored = visualCursorAnchoredRenderState(
+            at: targetTipPosition,
+            idleAngleOffset: visualCursorIdleRotationAmplitude() * 2
+        )
+
+        XCTAssertEqual(anchored.tipPosition.x, targetTipPosition.x, accuracy: 0.0001)
+        XCTAssertEqual(anchored.tipPosition.y, targetTipPosition.y, accuracy: 0.0001)
+        XCTAssertEqual(anchored.cursorBodyOffset.dx, 0, accuracy: 0.0001)
+        XCTAssertEqual(anchored.cursorBodyOffset.dy, 0, accuracy: 0.0001)
+        XCTAssertEqual(anchored.fogOffset.dx, 0, accuracy: 0.0001)
+        XCTAssertEqual(anchored.fogOffset.dy, 0, accuracy: 0.0001)
+        XCTAssertEqual(anchored.fogScale, 1, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(abs(anchored.rotation), CursorVisualDynamicsConfiguration.officialInspired.animatedAngleOffsetMax)
+    }
+
     private func makeSnapshot(treeLines: [String], focusedSummary: String?, selectedText: String? = nil) -> AppSnapshot {
         AppSnapshot(
             app: RunningAppDescriptor(
