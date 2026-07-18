@@ -189,7 +189,7 @@ final class OpenComputerUseKitTests: XCTestCase {
     }
 
     func testToolDefinitionCount() {
-        XCTAssertEqual(ToolDefinitions.all.count, 9)
+        XCTAssertEqual(ToolDefinitions.all.count, 10)
     }
 
     func testReadToolArgumentsAcceptsJSONObject() throws {
@@ -580,6 +580,19 @@ final class OpenComputerUseKitTests: XCTestCase {
             ((tools["click"]?.inputSchema["properties"] as? [String: [String: Any]])?["mouse_button"]?["enum"] as? [String]) ?? [],
             ["left", "right", "middle"]
         )
+        XCTAssertEqual(
+            tools["same_stage_activate"]?.description,
+            "Experimental probe: try to make an already-running app window visible without forced app activation and return structured evidence. This tool is part of plugin `Computer Use`."
+        )
+        XCTAssertEqual(
+            tools["same_stage_activate"]?.annotations["destructiveHint"] as? Bool,
+            false
+        )
+        XCTAssertEqual(
+            tools["same_stage_activate"]?.inputSchema["additionalProperties"] as? Bool,
+            false
+        )
+        XCTAssertEqual(tools["same_stage_activate"]?.inputSchema["required"] as? [String], ["app"])
         let getAppStateSchema = tools["get_app_state"]?.inputSchema
         let getAppStateProperties = getAppStateSchema?["properties"] as? [String: [String: Any]]
         XCTAssertEqual(getAppStateProperties?["show_full_text"]?["type"] as? String, "boolean")
@@ -601,6 +614,14 @@ final class OpenComputerUseKitTests: XCTestCase {
         XCTAssertEqual(result.primaryText, "Missing required argument: text")
         XCTAssertTrue(emptyResult.isError)
         XCTAssertEqual(emptyResult.primaryText, "Missing required argument: text")
+    }
+
+    func testSameStageActivateRequiresAppArgument() {
+        let dispatcher = ComputerUseToolDispatcher()
+        let result = dispatcher.callToolAsResult(name: "same_stage_activate", arguments: [:])
+
+        XCTAssertTrue(result.isError)
+        XCTAssertEqual(result.primaryText, "Missing required argument: app")
     }
 
     func testTypeTextUnicodeChunksPreserveGraphemeClusters() {
