@@ -137,6 +137,7 @@ public func openComputerUseHelpText(command: String? = nil) -> String {
 
         Print the current Accessibility and Screen Recording permission state.
         If permissions are missing, this also launches the onboarding app.
+        Dev bundles require OPEN_COMPUTER_USE_DEV_ONBOARDING=1 before showing onboarding.
         """
     case "list-apps":
         return """

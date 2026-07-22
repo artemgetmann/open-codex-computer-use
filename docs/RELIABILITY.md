@@ -22,6 +22,7 @@
 ## 当前故障排查顺序
 
 1. 先跑 `open-computer-use doctor`，确认权限状态；如果缺权限，命令会通过 `.app` app agent 拉起权限 onboarding 窗口，已全部授权则只打印状态并退出。
+   - `Open Computer Use (Dev).app` 默认只打印状态，不弹 onboarding；需要调试 Dev 权限引导时显式设置 `OPEN_COMPUTER_USE_DEV_ONBOARDING=1`。
 2. 用 `open-computer-use list-apps` 确认目标 app 是否被发现。
 3. 用 `open-computer-use snapshot <app>` 看是 transport 问题还是 snapshot / action 问题。
 4. 如果只想验证仓库基线，直接跑 fixture + smoke，不要先在复杂第三方 app 上排查。

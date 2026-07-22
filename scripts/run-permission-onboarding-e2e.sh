@@ -24,21 +24,38 @@ if [[ ! -x "${cli}" ]]; then
 fi
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/open-computer-use-permission-e2e.XXXXXX")"
+app_agent_owner_token="permission-e2e-$(uuidgen)"
+pid=""
 cleanup() {
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+
+  # The token is attached only if this E2E invocation launched the app-agent.
+  # A pre-existing release or Dev agent rejects the cleanup request.
+  OPEN_COMPUTER_USE_APP_AGENT_OWNER_TOKEN="${app_agent_owner_token}" \
+    "${cli}" __open-computer-use-stop-owned-app-agent >/dev/null 2>&1 || true
   rm -rf "${tmpdir}"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Using CLI: ${cli}"
 if [[ "${disable_app_agent_proxy}" == "1" || "${disable_app_agent_proxy}" == "true" || "${disable_app_agent_proxy}" == "yes" ]]; then
   echo "Using direct CLI permission checks (app-agent proxy disabled for this E2E)."
   run_cli() {
-    OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY=1 "${cli}" "$@"
+    OPEN_COMPUTER_USE_APP_AGENT_OWNER_TOKEN="${app_agent_owner_token}" \
+      OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY=1 \
+      "${cli}" "$@"
   }
 else
   echo "Using default CLI app-agent proxy behavior."
   run_cli() {
-    "${cli}" "$@"
+    OPEN_COMPUTER_USE_APP_AGENT_OWNER_TOKEN="${app_agent_owner_token}" \
+      "${cli}" "$@"
   }
 fi
 

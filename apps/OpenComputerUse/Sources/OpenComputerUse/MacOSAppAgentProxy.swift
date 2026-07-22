@@ -4,22 +4,68 @@ import Foundation
 import OpenComputerUseKit
 
 private let appAgentCommand = "__open-computer-use-app-agent"
+private let appAgentTerminateOwnedCommand = "__open-computer-use-stop-owned-app-agent"
 private let appAgentDisableEnvironmentKey = "OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY"
 private let appAgentProcessStartDate = Date()
 private let appAgentHandshakeTimeout: TimeInterval = 1
 
 enum MacOSAppAgentProxy {
+    static func isOwnedAgentTerminationInvocation(arguments: [String]) -> Bool {
+        arguments == [appAgentTerminateOwnedCommand]
+    }
+
     static func isAgentInvocation(arguments: [String]) -> Bool {
         arguments.first == appAgentCommand
     }
 
     @MainActor
     static func runAgent(arguments: [String]) throws {
-        guard arguments.count == 2 else {
-            throw OpenComputerUseCLIError(message: "\(appAgentCommand) requires a socket path")
+        guard arguments.count == 2 || arguments.count == 3 else {
+            throw OpenComputerUseCLIError(message: "\(appAgentCommand) requires a socket path and optional lifecycle owner token")
         }
 
-        try MacOSAppAgentRuntime.run(socketPath: arguments[1])
+        try MacOSAppAgentRuntime.run(
+            socketPath: arguments[1],
+            lifecycleOwnerToken: arguments.count == 3 ? arguments[2] : nil
+        )
+    }
+
+    static func terminateOwnedAgentIfRunning() throws {
+        guard let ownerToken = ProcessInfo.processInfo.environment[openComputerUseAppAgentOwnerEnvironmentKey],
+              !ownerToken.isEmpty,
+              let appURL = PermissionSupport.currentAppBundleURL()
+        else {
+            return
+        }
+
+        let socketPath = try socketPath(for: appURL)
+        guard lifecycleOwnerReceiptMatches(ownerToken: ownerToken, socketPath: socketPath) else {
+            return
+        }
+        defer { removeLifecycleOwnerReceiptIfOwned(ownerToken: ownerToken, socketPath: socketPath) }
+
+        // LaunchServices can return before the new process binds its socket.
+        // Retry only when this token left a launch receipt; no-launch and
+        // pre-existing-agent cleanup paths remain immediate.
+        _ = try retryOwnedAppAgentTermination(
+            maxAttempts: 201,
+            attempt: {
+                guard let client = AppAgentSocketClient.connect(path: socketPath),
+                      (try? client.isCurrentAgent(for: appURL)) == true
+                else {
+                    return .notReady
+                }
+
+                let response = try client.request([
+                    "kind": "terminateOwned",
+                    "ownerToken": ownerToken,
+                ])
+                return response["terminated"] as? Bool == true ? .terminated : .rejected
+            },
+            waitBeforeRetry: {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        )
     }
 
     static func shouldProxy(command: OpenComputerUseCLICommand) -> Bool {
@@ -112,6 +158,14 @@ enum MacOSAppAgentProxy {
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.arguments = [appAgentCommand, socketPath]
+        if let ownerToken = ProcessInfo.processInfo.environment[openComputerUseAppAgentOwnerEnvironmentKey],
+           !ownerToken.isEmpty
+        {
+            // Ownership is attached only when this invocation launches the
+            // agent. Connecting to an existing agent never adopts it.
+            configuration.arguments.append(ownerToken)
+            try writeLifecycleOwnerReceipt(ownerToken: ownerToken, socketPath: socketPath)
+        }
         configuration.activates = false
         configuration.createsNewApplicationInstance = true
 
@@ -142,6 +196,43 @@ enum MacOSAppAgentProxy {
         }
 
         throw OpenComputerUseCLIError(message: "Timed out waiting for Open Computer Use.app agent to start.")
+    }
+
+    private static func lifecycleOwnerReceiptURL(ownerToken: String, socketPath: String) -> URL {
+        let socketURL = URL(fileURLWithPath: socketPath, isDirectory: false)
+        let receiptFileName = openComputerUseAppAgentOwnerReceiptFileName(
+            socketFileName: socketURL.lastPathComponent,
+            ownerToken: ownerToken
+        )
+        return socketURL.deletingLastPathComponent().appendingPathComponent(receiptFileName)
+    }
+
+    private static func writeLifecycleOwnerReceipt(ownerToken: String, socketPath: String) throws {
+        let receiptURL = lifecycleOwnerReceiptURL(ownerToken: ownerToken, socketPath: socketPath)
+        try Data(ownerToken.utf8).write(to: receiptURL, options: .atomic)
+        guard chmod(receiptURL.path, mode_t(S_IRUSR | S_IWUSR)) == 0 else {
+            try? FileManager.default.removeItem(at: receiptURL)
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func lifecycleOwnerReceiptMatches(ownerToken: String, socketPath: String) -> Bool {
+        let receiptURL = lifecycleOwnerReceiptURL(ownerToken: ownerToken, socketPath: socketPath)
+        guard let data = try? Data(contentsOf: receiptURL),
+              let recordedToken = String(data: data, encoding: .utf8)
+        else {
+            return false
+        }
+
+        return openComputerUseAppAgentOwnerMatches(expected: recordedToken, requested: ownerToken)
+    }
+
+    private static func removeLifecycleOwnerReceiptIfOwned(ownerToken: String, socketPath: String) {
+        guard lifecycleOwnerReceiptMatches(ownerToken: ownerToken, socketPath: socketPath) else {
+            return
+        }
+
+        try? FileManager.default.removeItem(at: lifecycleOwnerReceiptURL(ownerToken: ownerToken, socketPath: socketPath))
     }
 
     private static func proxyMCP(client: AppAgentSocketClient) throws {
@@ -191,18 +282,23 @@ private struct CLIProxyResponse {
 @MainActor
 private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
     private let socketPath: String
+    private let lifecycleOwnerToken: String?
     private var listener: AppAgentSocketListener?
     private var turnEndedObserver: NSObjectProtocol?
 
-    private init(socketPath: String) {
+    private init(socketPath: String, lifecycleOwnerToken: String?) {
         self.socketPath = socketPath
+        self.lifecycleOwnerToken = lifecycleOwnerToken
     }
 
-    static func run(socketPath: String) throws {
+    static func run(socketPath: String, lifecycleOwnerToken: String?) throws {
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
 
-        let delegate = MacOSAppAgentRuntime(socketPath: socketPath)
+        let delegate = MacOSAppAgentRuntime(
+            socketPath: socketPath,
+            lifecycleOwnerToken: lifecycleOwnerToken
+        )
         application.delegate = delegate
         application.run()
     }
@@ -219,7 +315,10 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
         }
 
         do {
-            let listener = try AppAgentSocketListener(path: socketPath)
+            let listener = try AppAgentSocketListener(
+                path: socketPath,
+                lifecycleOwnerToken: lifecycleOwnerToken
+            )
             self.listener = listener
             listener.start()
         } catch {
@@ -248,10 +347,12 @@ private final class MacOSAppAgentRuntime: NSObject, NSApplicationDelegate {
 private final class AppAgentSocketListener: @unchecked Sendable {
     private let path: String
     private let socketFD: Int32
+    private let lifecycleOwnerToken: String?
     private var running = true
 
-    init(path: String) throws {
+    init(path: String, lifecycleOwnerToken: String?) throws {
         self.path = path
+        self.lifecycleOwnerToken = lifecycleOwnerToken
 
         socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else {
@@ -338,7 +439,10 @@ private final class AppAgentSocketListener: @unchecked Sendable {
             }
 
             Thread.detachNewThread {
-                AppAgentConnection(fileDescriptor: clientFD).run()
+                AppAgentConnection(
+                    fileDescriptor: clientFD,
+                    lifecycleOwnerToken: self.lifecycleOwnerToken
+                ).run()
             }
         }
     }
@@ -346,10 +450,12 @@ private final class AppAgentSocketListener: @unchecked Sendable {
 
 private final class AppAgentConnection: @unchecked Sendable {
     private let fileDescriptor: Int32
+    private let lifecycleOwnerToken: String?
     private let server = StdioMCPServer()
 
-    init(fileDescriptor: Int32) {
+    init(fileDescriptor: Int32, lifecycleOwnerToken: String?) {
         self.fileDescriptor = fileDescriptor
+        self.lifecycleOwnerToken = lifecycleOwnerToken
     }
 
     func run() {
@@ -386,6 +492,18 @@ private final class AppAgentConnection: @unchecked Sendable {
                     NSApp.terminate(nil)
                 }
                 return ["ok": true]
+            case "terminateOwned":
+                let requestedOwnerToken = request["ownerToken"] as? String
+                let ownsAgent = openComputerUseAppAgentOwnerMatches(
+                    expected: lifecycleOwnerToken,
+                    requested: requestedOwnerToken
+                )
+                if ownsAgent {
+                    Task { @MainActor in
+                        NSApp.terminate(nil)
+                    }
+                }
+                return ["terminated": ownsAgent]
             case "mcp":
                 let line = request["line"] as? String ?? ""
                 if let response = server.handle(line: line) {
@@ -419,7 +537,10 @@ private final class AppAgentConnection: @unchecked Sendable {
             switch command {
             case .launchOnboarding:
                 let permissions = PermissionDiagnostics.current()
-                if !permissions.allGranted {
+                if PermissionOnboardingPolicy.shouldPresent(
+                    permissionsMissing: !permissions.allGranted,
+                    isDevelopmentBundle: PermissionSupport.isCurrentAppBundleDevelopment
+                ) {
                     Task { @MainActor in
                         PermissionOnboardingApp.present()
                     }
@@ -428,7 +549,10 @@ private final class AppAgentConnection: @unchecked Sendable {
 
             case .doctor:
                 let permissions = PermissionDiagnostics.current()
-                if !permissions.missingPermissions.isEmpty {
+                if PermissionOnboardingPolicy.shouldPresent(
+                    permissionsMissing: !permissions.missingPermissions.isEmpty,
+                    isDevelopmentBundle: PermissionSupport.isCurrentAppBundleDevelopment
+                ) {
                     Task { @MainActor in
                         PermissionOnboardingApp.present()
                     }

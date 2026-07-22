@@ -4,6 +4,93 @@ import XCTest
 @testable import OpenComputerUseKit
 
 final class OpenComputerUseKitTests: XCTestCase {
+    func testAppAgentLifecycleOwnerRejectsMissingAndDifferentTokens() {
+        XCTAssertFalse(openComputerUseAppAgentOwnerMatches(expected: nil, requested: "run-a"))
+        XCTAssertFalse(openComputerUseAppAgentOwnerMatches(expected: "", requested: "run-a"))
+        XCTAssertFalse(openComputerUseAppAgentOwnerMatches(expected: "run-a", requested: nil))
+        XCTAssertFalse(openComputerUseAppAgentOwnerMatches(expected: "run-a", requested: "run-b"))
+        XCTAssertTrue(openComputerUseAppAgentOwnerMatches(expected: "run-a", requested: "run-a"))
+    }
+
+    func testConcurrentAppAgentOwnersUseSeparateFilesystemSafeReceipts() {
+        let first = openComputerUseAppAgentOwnerReceiptFileName(
+            socketFileName: "ocu-agent-example.sock",
+            ownerToken: "run-a/with unsafe value"
+        )
+        let second = openComputerUseAppAgentOwnerReceiptFileName(
+            socketFileName: "ocu-agent-example.sock",
+            ownerToken: "run-b/with unsafe value"
+        )
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(first.hasPrefix("ocu-agent-example.sock.owner-"))
+        XCTAssertFalse(first.contains("run-a"))
+        XCTAssertFalse(first.contains("/"))
+    }
+
+    func testOwnedAppAgentCleanupRetriesUntilDelayedAgentIsReady() throws {
+        var attempts = [
+            OwnedAppAgentTerminationAttempt.notReady,
+            .notReady,
+            .terminated,
+        ]
+        var waits = 0
+
+        let terminated = retryOwnedAppAgentTermination(
+            maxAttempts: 5,
+            attempt: { attempts.removeFirst() },
+            waitBeforeRetry: { waits += 1 }
+        )
+
+        XCTAssertTrue(terminated)
+        XCTAssertEqual(waits, 2)
+        XCTAssertTrue(attempts.isEmpty)
+    }
+
+    func testOwnedAppAgentCleanupDoesNotRetryRejectedOwner() throws {
+        var attempts = 0
+
+        let terminated = retryOwnedAppAgentTermination(
+            maxAttempts: 5,
+            attempt: {
+                attempts += 1
+                return .rejected
+            },
+            waitBeforeRetry: {
+                XCTFail("Rejected ownership must not retry")
+            }
+        )
+
+        XCTAssertFalse(terminated)
+        XCTAssertEqual(attempts, 1)
+    }
+
+    func testDevelopmentOnboardingRequiresExplicitDeveloperIntent() {
+        XCTAssertFalse(PermissionOnboardingPolicy.shouldPresent(
+            permissionsMissing: true,
+            isDevelopmentBundle: true,
+            environment: [:]
+        ))
+        XCTAssertTrue(PermissionOnboardingPolicy.shouldPresent(
+            permissionsMissing: true,
+            isDevelopmentBundle: true,
+            environment: [PermissionOnboardingPolicy.developerIntentEnvironmentKey: "1"]
+        ))
+    }
+
+    func testProductionOnboardingRemainsEnabledWithoutDeveloperIntent() {
+        XCTAssertTrue(PermissionOnboardingPolicy.shouldPresent(
+            permissionsMissing: true,
+            isDevelopmentBundle: false,
+            environment: [:]
+        ))
+        XCTAssertFalse(PermissionOnboardingPolicy.shouldPresent(
+            permissionsMissing: false,
+            isDevelopmentBundle: false,
+            environment: [:]
+        ))
+    }
+
     func testAppAgentSocketNameIsScopedToBundleIdentity() {
         let releaseName = openComputerUseAppAgentSocketFileName(bundleIdentifier: PermissionSupport.bundleIdentifier)
         let developmentName = openComputerUseAppAgentSocketFileName(bundleIdentifier: PermissionSupport.developmentBundleIdentifier)
