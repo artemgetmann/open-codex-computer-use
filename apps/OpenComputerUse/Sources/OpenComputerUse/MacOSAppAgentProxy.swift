@@ -32,8 +32,7 @@ enum MacOSAppAgentProxy {
 
     @MainActor
     static func runProxy(command: OpenComputerUseCLICommand, arguments: [String]) throws -> Int32 {
-        let socketPath = defaultSocketPath()
-        let client = try connectOrLaunchAgent(socketPath: socketPath)
+        let client = try connectOrLaunchAgent()
 
         switch command {
         case .mcp:
@@ -65,18 +64,27 @@ enum MacOSAppAgentProxy {
         isRunningFromOpenComputerUseAppBundle && getppid() == 1
     }
 
-    private static func defaultSocketPath() -> String {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("open-computer-use-agent.sock")
+    private static func socketPath(for appURL: URL) throws -> String {
+        guard let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier,
+              !bundleIdentifier.isEmpty
+        else {
+            throw OpenComputerUseCLIError(message: "Unable to identify Open Computer Use.app for app-agent isolation.")
+        }
+
+        // TCC grants are scoped to the app identity. Use that same identity for
+        // transport ownership so a Dev helper cannot replace the release helper.
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent(openComputerUseAppAgentSocketFileName(bundleIdentifier: bundleIdentifier))
             .standardizedFileURL
             .path
     }
 
     @MainActor
-    private static func connectOrLaunchAgent(socketPath: String) throws -> AppAgentSocketClient {
+    private static func connectOrLaunchAgent() throws -> AppAgentSocketClient {
         guard let appURL = PermissionSupport.currentAppBundleURL() else {
             throw OpenComputerUseCLIError(message: "Unable to locate Open Computer Use.app for app-scoped macOS permissions.")
         }
+        let socketPath = try socketPath(for: appURL)
 
         if let client = AppAgentSocketClient.connect(path: socketPath) {
             if (try? client.isCurrentAgent(for: appURL)) == true {
@@ -99,7 +107,14 @@ enum MacOSAppAgentProxy {
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             if let client = AppAgentSocketClient.connect(path: socketPath) {
-                return client
+                // A successful connect is not enough: a stale or racing process
+                // must not silently run automation under the wrong app identity.
+                if (try? client.isCurrentAgent(for: appURL)) == true {
+                    return client
+                }
+
+                _ = try? client.request(["kind": "terminate"])
+                unlink(socketPath)
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
@@ -215,7 +230,6 @@ private final class AppAgentSocketListener: @unchecked Sendable {
 
     init(path: String) throws {
         self.path = path
-        unlink(path)
 
         socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard socketFD >= 0 else {
@@ -250,6 +264,7 @@ private final class AppAgentSocketListener: @unchecked Sendable {
 
         guard listen(socketFD, 16) == 0 else {
             close(socketFD)
+            unlink(path)
             throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
 
@@ -268,7 +283,25 @@ private final class AppAgentSocketListener: @unchecked Sendable {
 
     func stop() {
         running = false
+        unlinkSocketIfOwned()
         close(socketFD)
+    }
+
+    private func unlinkSocketIfOwned() {
+        var descriptorInfo = stat()
+        var pathInfo = stat()
+
+        // A stale agent can terminate after its replacement has already bound
+        // the same path. Compare inode ownership before unlinking so the old
+        // process cannot remove the new agent's reachable socket.
+        guard fstat(socketFD, &descriptorInfo) == 0,
+              lstat(path, &pathInfo) == 0,
+              descriptorInfo.st_dev == pathInfo.st_dev,
+              descriptorInfo.st_ino == pathInfo.st_ino
+        else {
+            return
+        }
+
         unlink(path)
     }
 

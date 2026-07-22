@@ -1,5 +1,11 @@
 # 功能发布记录
 
+## 2026-07
+
+| 日期 | 功能域 | 用户价值 | 变更摘要 |
+| --- | --- | --- | --- |
+| 2026-07-22 | macOS app-agent 稳定性 | 正式版与 Dev 版同时存在时不再互相抢占 Computer Use 连接；重复启动也不会让隐藏 helper 累积并导致 CLI 卡死。 | app-agent socket 改为按 bundle identifier 隔离；listener 不再盲目 unlink 活跃 socket，并在退出时只清理自己持有的 inode；代理连接后再次核验 app identity。 |
+
 ## 2026-06
 
 | 日期 | 功能域 | 用户价值 | 变更摘要 |

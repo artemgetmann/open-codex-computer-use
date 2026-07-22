@@ -4,6 +4,24 @@ import XCTest
 @testable import OpenComputerUseKit
 
 final class OpenComputerUseKitTests: XCTestCase {
+    func testAppAgentSocketNameIsScopedToBundleIdentity() {
+        let releaseName = openComputerUseAppAgentSocketFileName(bundleIdentifier: PermissionSupport.bundleIdentifier)
+        let developmentName = openComputerUseAppAgentSocketFileName(bundleIdentifier: PermissionSupport.developmentBundleIdentifier)
+
+        XCTAssertNotEqual(releaseName, developmentName)
+        XCTAssertEqual(releaseName, openComputerUseAppAgentSocketFileName(bundleIdentifier: PermissionSupport.bundleIdentifier))
+        XCTAssertTrue(releaseName.hasPrefix("ocu-agent-"))
+        XCTAssertTrue(releaseName.hasSuffix(".sock"))
+    }
+
+    func testAppAgentSocketNameStaysWithinUnixPathBudget() {
+        let longIdentifier = "com.example." + String(repeating: "preview-build-", count: 20)
+        let fileName = openComputerUseAppAgentSocketFileName(bundleIdentifier: longIdentifier)
+
+        XCTAssertEqual(fileName.utf8.count, 31)
+        XCTAssertFalse(fileName.contains("/"))
+    }
+
     func testCLIRecognizesGlobalHelpAndVersionFlags() throws {
         XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["-h"]), .help(command: nil))
         XCTAssertEqual(try parseOpenComputerUseCLI(arguments: ["--help"]), .help(command: nil))
