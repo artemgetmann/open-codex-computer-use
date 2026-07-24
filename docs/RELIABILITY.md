@@ -13,6 +13,7 @@
 ## 已知关键依赖
 
 - macOS 上必须给 `Open Computer Use.app` 授权 `Accessibility` 与 `Screen Recording`；终端本身不应该再是必需授权对象。
+- macOS CLI 复用已有 app-agent 前会执行最多 1 秒的 identity handshake。无响应或身份无法核验的 socket endpoint 会被安全替换，但不会向其进程发送 terminate；普通 Computer Use 请求不继承这条短 handshake 超时。
 - smoke suite 依赖本地 GUI session，不能把它当成无头环境命令。
 - 普通 app 的 `get_app_state` 结果依赖 AX tree 和窗口截图，复杂 app 上输出会有差异；Electron/WebView app 的 AX tree 通常很深，当前会压缩空 wrapper 并放宽遍历深度，以优先保留可操作文本、按钮和输入框。
 - Linux runtime 依赖已登录桌面用户 session；缺少 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS` 或 display 环境时，会尝试从 `/run/user/<uid>` 和常见桌面进程自动发现当前用户的 session env。纯 SSH tty 如果找不到桌面 session 仍不能直接访问 AT-SPI GUI tree。

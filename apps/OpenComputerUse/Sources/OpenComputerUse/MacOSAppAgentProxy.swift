@@ -6,6 +6,7 @@ import OpenComputerUseKit
 private let appAgentCommand = "__open-computer-use-app-agent"
 private let appAgentDisableEnvironmentKey = "OPEN_COMPUTER_USE_DISABLE_APP_AGENT_PROXY"
 private let appAgentProcessStartDate = Date()
+private let appAgentHandshakeTimeout: TimeInterval = 1
 
 enum MacOSAppAgentProxy {
     static func isAgentInvocation(arguments: [String]) -> Bool {
@@ -87,11 +88,23 @@ enum MacOSAppAgentProxy {
         let socketPath = try socketPath(for: appURL)
 
         if let client = AppAgentSocketClient.connect(path: socketPath) {
-            if (try? client.isCurrentAgent(for: appURL)) == true {
+            let identityStatus = try? client.identityStatus(
+                for: appURL,
+                timeout: appAgentHandshakeTimeout
+            )
+            if identityStatus == .current {
                 return client
             }
 
-            _ = try? client.request(["kind": "terminate"])
+            // A timeout or malformed identity response does not prove which
+            // process owns the socket. Only a responsive, path-and-bundle
+            // verified stale agent is safe to terminate.
+            if identityStatus == .verifiedStale {
+                _ = try? client.request(
+                    ["kind": "terminate"],
+                    timeout: appAgentHandshakeTimeout
+                )
+            }
             unlink(socketPath)
         } else {
             unlink(socketPath)
@@ -109,11 +122,20 @@ enum MacOSAppAgentProxy {
             if let client = AppAgentSocketClient.connect(path: socketPath) {
                 // A successful connect is not enough: a stale or racing process
                 // must not silently run automation under the wrong app identity.
-                if (try? client.isCurrentAgent(for: appURL)) == true {
+                let identityStatus = try? client.identityStatus(
+                    for: appURL,
+                    timeout: appAgentHandshakeTimeout
+                )
+                if identityStatus == .current {
                     return client
                 }
 
-                _ = try? client.request(["kind": "terminate"])
+                if identityStatus == .verifiedStale {
+                    _ = try? client.request(
+                        ["kind": "terminate"],
+                        timeout: appAgentHandshakeTimeout
+                    )
+                }
                 unlink(socketPath)
             }
             Thread.sleep(forTimeInterval: 0.05)
@@ -471,116 +493,6 @@ private enum AppAgentEnvironment {
         }
 
         return try body()
-    }
-}
-
-private final class AppAgentSocketClient: @unchecked Sendable {
-    private let file: UnsafeMutablePointer<FILE>
-
-    private init(file: UnsafeMutablePointer<FILE>) {
-        self.file = file
-    }
-
-    deinit {
-        fclose(file)
-    }
-
-    static func connect(path: String) -> AppAgentSocketClient? {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else {
-            return nil
-        }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
-        let copied = withUnsafeMutablePointer(to: &address.sun_path) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: pathCapacity) { buffer -> Bool in
-                let bytes = Array(path.utf8)
-                guard bytes.count < pathCapacity else {
-                    return false
-                }
-                for index in 0..<bytes.count {
-                    buffer[index] = CChar(bitPattern: bytes[index])
-                }
-                buffer[bytes.count] = 0
-                return true
-            }
-        }
-
-        guard copied else {
-            close(fd)
-            return nil
-        }
-
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard result == 0, let file = fdopen(fd, "r+") else {
-            close(fd)
-            return nil
-        }
-
-        return AppAgentSocketClient(file: file)
-    }
-
-    func request(_ object: [String: Any]) throws -> [String: Any] {
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
-        guard let line = String(data: data, encoding: .utf8) else {
-            throw ComputerUseError.message("Failed to encode app-agent request.")
-        }
-
-        writeAgentLine(line, to: file)
-
-        guard let responseLine = readAgentLine(file),
-              let response = try JSONSerialization.jsonObject(with: Data(responseLine.utf8)) as? [String: Any]
-        else {
-            throw ComputerUseError.message("Open Computer Use.app agent closed the connection.")
-        }
-
-        if let error = response["error"] as? String {
-            throw ComputerUseError.message(error)
-        }
-
-        return response
-    }
-
-    func isCurrentAgent(for appURL: URL) throws -> Bool {
-        let response = try request(["kind": "agentInfo"])
-        let expectedBundleURL = appURL.standardizedFileURL
-
-        guard response["bundleURL"] as? String == expectedBundleURL.path else {
-            return false
-        }
-
-        guard let processStartTime = response["processStartTime"] as? TimeInterval else {
-            return false
-        }
-
-        guard let executableURL = executableURL(for: expectedBundleURL),
-              let modifiedAt = try? executableURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        else {
-            return true
-        }
-
-        return processStartTime + 0.5 >= modifiedAt.timeIntervalSince1970
-    }
-
-    private func executableURL(for appURL: URL) -> URL? {
-        guard let bundle = Bundle(url: appURL),
-              let executableName = bundle.object(forInfoDictionaryKey: kCFBundleExecutableKey as String) as? String,
-              !executableName.isEmpty
-        else {
-            return nil
-        }
-
-        return appURL
-            .appendingPathComponent("Contents", isDirectory: true)
-            .appendingPathComponent("MacOS", isDirectory: true)
-            .appendingPathComponent(executableName)
-            .standardizedFileURL
     }
 }
 
