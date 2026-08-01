@@ -1134,8 +1134,8 @@ final class OpenComputerUseKitTests: XCTestCase {
 
     func testBlockingAsyncBridgeTimesOutScreenshotWork() {
         XCTAssertThrowsError(
-            try BlockingAsyncBridge.run(timeout: 0.01) {
-                try await Task.sleep(nanoseconds: 200_000_000)
+            try BlockingAsyncBridge.run(timeout: 0.05) {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
                 return "late"
             }
         ) { error in
@@ -1143,6 +1143,28 @@ final class OpenComputerUseKitTests: XCTestCase {
                 (error as? ComputerUseError)?.errorDescription?.contains("timed out") == true
             )
         }
+    }
+
+    func testBlockingAsyncBridgeRejectsSignalObservedAfterRunLoopOvershootsDeadline() {
+        let semaphore = DispatchSemaphore(value: 0)
+        var uptimeNanoseconds: UInt64 = 1_000_000_000
+
+        let signaledBeforeDeadline = BlockingAsyncBridge.waitForSignal(
+            semaphore,
+            timeout: 0.01,
+            isMainThread: true,
+            monotonicNow: {
+                DispatchTime(uptimeNanoseconds: uptimeNanoseconds)
+            },
+            pumpMainRunLoop: { _ in
+                // Model a main-run-loop callback that blocks past the deadline
+                // while the detached screenshot task completes.
+                uptimeNanoseconds += 20_000_000
+                semaphore.signal()
+            }
+        )
+
+        XCTAssertFalse(signaledBeforeDeadline)
     }
 
     func testComputerUseErrorsFormatLikeToolText() {

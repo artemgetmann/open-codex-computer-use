@@ -4,6 +4,7 @@
 
 | 日期 | 功能域 | 用户价值 | 变更摘要 |
 | --- | --- | --- | --- |
+| 2026-07-31 | macOS 截图超时 | 主线程的其它回调暂时卡住时，ScreenCaptureKit 截图不会在超时后又接受迟到结果，`get_app_state` 的五秒保护上限保持有效。 | 截图同步桥改用单调时钟，并在每次 main run loop pump 后先判定截止时间再接受完成信号；补确定性的迟到信号回归和放宽间隔的端到端超时测试。 |
 | 2026-07-24 | macOS app-agent 恢复 | 隐藏 helper 的 socket 仍可连接但 helper 已无响应时，Computer Use 会在短时间内替换它，不再一直卡到宿主 30 秒超时；正常 helper 仍直接复用。 | identity handshake 增加 1 秒 request timeout；只终止身份已核验的 stale agent，无法核验的 endpoint 仅 unlink 并安全拉起替代 agent；普通 tool request 不继承短超时。 |
 | 2026-07-22 | macOS app-agent 稳定性 | 正式版与 Dev 版同时存在时不再互相抢占 Computer Use 连接；重复启动也不会让隐藏 helper 累积并导致 CLI 卡死。 | app-agent socket 改为按 bundle identifier 隔离；listener 不再盲目 unlink 活跃 socket，并在退出时只清理自己持有的 inode；代理连接后再次核验 app identity。 |
 
