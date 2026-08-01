@@ -548,6 +548,8 @@ private final class AsyncResultBox<T>: @unchecked Sendable {
 }
 
 enum BlockingAsyncBridge {
+    private static let mainRunLoopSlice: TimeInterval = 0.01
+
     static func run<T>(timeout: TimeInterval? = nil, _ operation: @escaping @Sendable () async throws -> T) throws -> T {
         let semaphore = DispatchSemaphore(value: 0)
         let resultBox = AsyncResultBox<T>()
@@ -572,18 +574,42 @@ enum BlockingAsyncBridge {
         }()
     }
 
-    private static func waitForSignal(_ semaphore: DispatchSemaphore, timeout: TimeInterval?) -> Bool {
-        let deadline = timeout.map { Date(timeIntervalSinceNow: $0) }
+    static func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval?,
+        isMainThread: Bool = Thread.isMainThread,
+        monotonicNow: () -> DispatchTime = { DispatchTime.now() },
+        pumpMainRunLoop: (TimeInterval) -> Void = { slice in
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: slice))
+        }
+    ) -> Bool {
+        // DispatchTime is monotonic, so clock corrections cannot lengthen the
+        // screenshot timeout after the operation starts.
+        let deadline = timeout.map {
+            monotonicNow() + .nanoseconds(Int(max(0, $0) * 1_000_000_000))
+        }
 
-        if Thread.isMainThread {
-            while semaphore.wait(timeout: .now()) == .timedOut {
-                if let deadline, Date() >= deadline {
+        if isMainThread {
+            while true {
+                // Expiration wins before checking the semaphore. In particular,
+                // a run-loop callback may block beyond its requested slice while
+                // the detached operation completes in the background.
+                if let deadline, monotonicNow() >= deadline {
                     return false
                 }
 
-                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+                if semaphore.wait(timeout: .now()) == .success {
+                    return true
+                }
+
+                pumpMainRunLoop(mainRunLoopSlice)
+
+                // Re-check immediately after pumping. Checking the semaphore
+                // first here would accept a result that arrived after deadline.
+                if let deadline, monotonicNow() >= deadline {
+                    return false
+                }
             }
-            return true
         }
 
         if let timeout {
