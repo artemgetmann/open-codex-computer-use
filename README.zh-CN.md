@@ -125,6 +125,9 @@ open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0
 # 检查权限；只有缺失时才会拉起引导，已全部授权则只打印状态并退出
 open-computer-use doctor
 
+# Dev 包默认不弹权限引导；工程调试时需要显式开启
+OPEN_COMPUTER_USE_DEV_ONBOARDING=1 open-computer-use doctor
+
 # 查看帮助
 open-computer-use -h
 ```

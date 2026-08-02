@@ -129,6 +129,9 @@ open-computer-use call --calls-file examples/textedit-overlay-seq.json --sleep 0
 # Check permissions; onboarding only opens when something is missing
 open-computer-use doctor
 
+# Dev bundles suppress permission onboarding unless engineering explicitly opts in
+OPEN_COMPUTER_USE_DEV_ONBOARDING=1 open-computer-use doctor
+
 # Run local validation from a source checkout
 make smoke
 OPEN_COMPUTER_USE_STRESS_LOOPS=20 make stress

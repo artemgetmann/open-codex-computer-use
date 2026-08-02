@@ -132,6 +132,20 @@ public enum PermissionSupport {
         bundleIdentifier == Self.bundleIdentifier || bundleIdentifier == developmentBundleIdentifier
     }
 
+    public static var isCurrentAppBundleDevelopment: Bool {
+        #if DEBUG
+        // A raw SwiftPM debug executable has no app bundle metadata, but it is
+        // still a developer artifact and must not inherit production onboarding.
+        return true
+        #else
+        // Bundle.main is authoritative once LaunchServices has started an app
+        // agent. The fallback URL keeps direct invocations from a built Dev
+        // bundle on the same policy path without conflating release installs.
+        return isDevelopmentAppBundle(resolvedMainAppBundleURL())
+            || isDevelopmentAppBundle(currentAppBundleURL())
+        #endif
+    }
+
     public static func currentAppBundleURL() -> URL? {
         let runningBundleURL = resolvedMainAppBundleURL()
         return preferredPermissionAppBundleURL(
@@ -453,6 +467,30 @@ public enum PermissionSupport {
 
         let executableURL = bundleURL.appendingPathComponent("Contents/MacOS/\(executableName)")
         return fileManager.fileExists(atPath: executableURL.path)
+    }
+}
+
+public enum PermissionOnboardingPolicy {
+    public static let developerIntentEnvironmentKey = "OPEN_COMPUTER_USE_DEV_ONBOARDING"
+
+    public static func shouldPresent(
+        permissionsMissing: Bool,
+        isDevelopmentBundle: Bool,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard permissionsMissing else {
+            return false
+        }
+
+        // Production retains the first-run experience. A Dev bundle is a
+        // repository tool, so it may only create a second macOS permission
+        // identity when the engineer explicitly opts into that workflow.
+        return !isDevelopmentBundle || developerIntentEnabled(environment: environment)
+    }
+
+    public static func developerIntentEnabled(environment: [String: String]) -> Bool {
+        let value = environment[developerIntentEnvironmentKey]?.lowercased()
+        return value == "1" || value == "true" || value == "yes" || value == "on"
     }
 }
 

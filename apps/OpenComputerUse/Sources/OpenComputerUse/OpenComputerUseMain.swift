@@ -26,6 +26,11 @@ enum OpenComputerUseMain {
     private static func run() throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
 
+        if MacOSAppAgentProxy.isOwnedAgentTerminationInvocation(arguments: arguments) {
+            try MacOSAppAgentProxy.terminateOwnedAgentIfRunning()
+            return
+        }
+
         if MacOSAppAgentProxy.isAgentInvocation(arguments: arguments) {
             try MacOSAppAgentProxy.runAgent(arguments: arguments)
             return
@@ -51,7 +56,10 @@ enum OpenComputerUseMain {
         case .doctor:
             let permissions = PermissionDiagnostics.current()
             print(permissions.summary)
-            if !permissions.missingPermissions.isEmpty {
+            if PermissionOnboardingPolicy.shouldPresent(
+                permissionsMissing: !permissions.missingPermissions.isEmpty,
+                isDevelopmentBundle: PermissionSupport.isCurrentAppBundleDevelopment
+            ) {
                 PermissionOnboardingApp.launch()
             }
         case .listApps:
@@ -77,7 +85,11 @@ enum OpenComputerUseMain {
         case .version:
             print(resolvedOpenComputerUseVersion())
         case .launchOnboarding:
-            if !PermissionDiagnostics.current().allGranted {
+            let permissions = PermissionDiagnostics.current()
+            if PermissionOnboardingPolicy.shouldPresent(
+                permissionsMissing: !permissions.allGranted,
+                isDevelopmentBundle: PermissionSupport.isCurrentAppBundleDevelopment
+            ) {
                 PermissionOnboardingApp.launch()
             }
         }
