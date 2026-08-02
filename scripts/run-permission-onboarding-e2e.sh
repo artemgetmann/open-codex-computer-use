@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="${OPEN_COMPUTER_USE_E2E_CLI:-${repo_root}/.build/debug/OpenComputerUse}"
 timeout_seconds="${OPEN_COMPUTER_USE_E2E_TIMEOUT_SECONDS:-3}"
 disable_app_agent_proxy="${OPEN_COMPUTER_USE_E2E_DISABLE_APP_AGENT_PROXY:-1}"
+monotonic_clock_command="${OPEN_COMPUTER_USE_E2E_MONOTONIC_MILLISECONDS_COMMAND:-}"
 
 cd "${repo_root}"
 
@@ -22,6 +23,32 @@ if [[ ! -x "${cli}" ]]; then
     exit 1
   fi
 fi
+
+if [[ ! "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "OPEN_COMPUTER_USE_E2E_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 2
+fi
+
+monotonic_milliseconds() {
+  local value=""
+
+  # Tests may inject a deterministic monotonic clock to cover boundary
+  # crossings without sleeping. Production verification uses macOS's bundled
+  # Perl and its monotonic clock, so wall-clock changes and Bash's whole-second
+  # SECONDS rounding cannot shorten the timeout window.
+  if [[ -n "${monotonic_clock_command}" ]]; then
+    value="$("${monotonic_clock_command}")"
+  else
+    value="$(/usr/bin/perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+      'printf "%.0f\n", clock_gettime(CLOCK_MONOTONIC) * 1000')"
+  fi
+
+  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+    echo "Monotonic clock returned an invalid millisecond value: ${value}" >&2
+    return 1
+  fi
+  printf '%s\n' "${value}"
+}
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/open-computer-use-permission-e2e.XXXXXX")"
 app_agent_owner_token="permission-e2e-$(uuidgen)"
@@ -73,9 +100,13 @@ stderr_file="${tmpdir}/onboarding.stderr"
 run_cli >"${stdout_file}" 2>"${stderr_file}" &
 pid="$!"
 
-deadline=$((SECONDS + timeout_seconds))
+deadline_milliseconds=$(( $(monotonic_milliseconds) + timeout_seconds * 1000 ))
 exit_code=""
-while (( SECONDS < deadline )); do
+while true; do
+  now_milliseconds="$(monotonic_milliseconds)"
+  if (( now_milliseconds >= deadline_milliseconds )); then
+    break
+  fi
   if ! kill -0 "${pid}" 2>/dev/null; then
     if wait "${pid}"; then
       exit_code=0

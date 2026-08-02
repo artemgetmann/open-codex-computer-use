@@ -69,6 +69,55 @@ run_signal_case() {
   fi
 }
 
+run_first_poll_rollover_case() {
+  local marker="${tmpdir}/rollover.marker"
+  local clock_state="${tmpdir}/rollover-clock.state"
+  local fake_clock="${tmpdir}/fake-monotonic-clock.sh"
+  local status=0
+
+  # Start at 1.999s and make the first poll happen at 2.001s. A whole-second
+  # deadline would falsely expire at that boundary; the precise monotonic
+  # deadline remains 2.999s and must accept the already-finished command.
+  cat >"${fake_clock}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${OPEN_COMPUTER_USE_FAKE_CLOCK_STATE:?}"
+calls=0
+if [[ -f "${state}" ]]; then
+  calls="$(cat "${state}")"
+fi
+if [[ "${calls}" -eq 0 ]]; then
+  printf '1999\n'
+else
+  printf '2001\n'
+fi
+printf '%s\n' "$((calls + 1))" >"${state}"
+EOF
+  chmod +x "${fake_clock}"
+
+  OPEN_COMPUTER_USE_E2E_CLI="${fake_cli}" \
+    OPEN_COMPUTER_USE_E2E_TIMEOUT_SECONDS=1 \
+    OPEN_COMPUTER_USE_E2E_MONOTONIC_MILLISECONDS_COMMAND="${fake_clock}" \
+    OPEN_COMPUTER_USE_FAKE_CLOCK_STATE="${clock_state}" \
+    OPEN_COMPUTER_USE_FAKE_E2E_MARKER="${marker}" \
+    OPEN_COMPUTER_USE_FAKE_E2E_MODE=success \
+    "${runner}" >/dev/null 2>&1 || status=$?
+
+  if [[ "${status}" != "0" ]]; then
+    echo "Expected first-poll rollover status 0, got ${status}." >&2
+    exit 1
+  fi
+  if [[ ! -f "${clock_state}" ]] || (( $(cat "${clock_state}") < 2 )); then
+    echo "Expected the precise monotonic clock on the first poll." >&2
+    exit 1
+  fi
+  if ! rg -q '^cleanup:permission-e2e-.+' "${marker}"; then
+    echo "Expected owned app-agent cleanup after first-poll rollover." >&2
+    exit 1
+  fi
+}
+
+run_first_poll_rollover_case
 run_case success 0
 run_case failure 7
 run_case hang 1
